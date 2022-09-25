@@ -1,12 +1,13 @@
 #include "smallmap.h"
 #include "tshash.h"
 #include <stdint.h>
+#include <assert.h>
 #include <string.h>
 #include <stdio.h>
 
 static uint64_t pcg32_state = 0x853C49E6748FEA9BULL;
 
-uint32_t pcg32_rotr32(uint32_t x, uint32_t r)
+static uint32_t pcg32_rotr32(uint32_t x, uint32_t r)
 {
     return (x >> r) | (x << ((~r + 1) & 31U));
 }
@@ -28,6 +29,40 @@ void pcg32_srand(uint64_t seed)
     pcg32_rand();
 }
 
+/**
+ * @brief return [0, s)
+ */
+uint32_t pcg32_range_ropen(uint32_t s)
+{
+    uint32_t x = pcg32_rand();
+    uint64_t m = (uint64_t)x * (uint64_t)s;
+    uint32_t l = (uint32_t)m;
+    if(l < s) {
+        uint32_t t = ((uint32_t)(-(int64_t)s)) % s;
+        while(l < t) {
+            x = pcg32_rand();
+            m = (uint64_t)x * (uint64_t)s;
+            l = (uint32_t)m;
+        }
+    }
+    return m >> 32;
+}
+
+void shuffle(uint32_t size, char** items0, uint32_t* items1)
+{
+    for(uint32_t i = size; 0 != i; --i) {
+        uint32_t offset = pcg32_range_ropen(i);
+        assert(offset<size);
+        char* tmp0 = items0[offset];
+        items0[offset] = items0[i-1];
+        items0[i-1] = tmp0;
+
+        uint32_t tmp1 = items1[offset];
+        items1[offset] = items1[i-1];
+        items1[i-1] = tmp1;
+    }
+}
+
 static bool key_constructor(smallmap* map, void* dst_key, const void* src_key)
 {
     const char* src = (const char*)src_key;
@@ -38,7 +73,7 @@ static bool key_constructor(smallmap* map, void* dst_key, const void* src_key)
     }
     memcpy(dst, src, len);
     dst[len] = '\0';
-    (*(char**)dst_key) = dst;
+    *((char**)dst_key) = dst;
     return true;
 }
 
@@ -90,8 +125,8 @@ static uint32_t hasher(const void* key)
 
 static bool compare(const void* x0, const void* x1)
 {
-    const char* s0 = (const char*)x0;
-    const char* s1 = (const char*)x1;
+    const char* s0 = *(const char**)x0;
+    const char* s1 = *(const char**)x1;
     return 0 == strcmp(s0, s1);
 }
 
@@ -105,16 +140,19 @@ int main(void)
     if(NULL == keys){
         return -1;
     }
+    uint32_t* values = (uint32_t*)malloc(sizeof(uint32_t)*SAMPLE_NUM);
     for(uint32_t i=0; i<SAMPLE_NUM; ++i){
         char buffer[64] = {0};
-        sprintf(buffer, "key_%010lld", i);
+        sprintf(buffer, "key_%010d", i);
         size_t len = strlen(buffer);
         keys[i] = (char*)malloc(len+1);
         if(NULL == keys[i]){
             return -1;
         }
         strcpy(keys[i], buffer);
+        values[i] = i;
     }
+    shuffle(SAMPLE_NUM, keys, values);
 
     smallmap* map = sm_construct(
         sizeof(char*),
@@ -128,17 +166,31 @@ int main(void)
         hasher,
         compare,
         NULL, NULL);
-    #if 0
     for(uint32_t i=0; i<SAMPLE_NUM; ++i){
-        sm_add(map, keys[i], &i);
+        sm_add(map, keys[i], &values[i]);
     }
-    #endif
+    for(uint32_t i=0; i<SAMPLE_NUM; ++i){
+        uint32_t index = sm_find(map, keys[i]);
+        assert(index != SM_INVALID);
+        uint32_t value;
+        bool result = sm_try_get(map, keys[i], &value);
+        assert(result);
+        assert(value == values[i]);
+    }
+    for(uint32_t i=0; i<SAMPLE_NUM; ++i){
+        sm_remove(map, keys[i]);
+    }
+    for(uint32_t i=0; i<SAMPLE_NUM; ++i){
+        uint32_t index = sm_find(map, keys[i]);
+        assert(index == SM_INVALID);
+    }
     sm_destruct(map);
     map = NULL;
 
     for(uint32_t i=0; i<SAMPLE_NUM; ++i){
         free(keys[i]);
     }
+    free(values);
     free(keys);
     return 0;
 }

@@ -5,10 +5,12 @@ set(CMAKE_CONFIGURATION_TYPES "Debug" "Release")
 set(PROJECT_NAME smallmap)
 project(${PROJECT_NAME})
 
+include_directories(AFTER ${CMAKE_CURRENT_SOURCE_DIR}/../)
+
 ########################################################################
 # Sources
-set(HEADERS "smallmap.h;tshash.h")
-set(SOURCES "main.c;smallmap.c;tshash.c")
+set(HEADERS "smallmap.h;../tshash.h")
+set(SOURCES "main.c;smallmap.c;../tshash.c")
 
 source_group("include" FILES ${HEADERS})
 source_group("src" FILES ${SOURCES})

@@ -3,22 +3,26 @@
 #include <stddef.h>
 #include <string.h>
 
-#define SM_INVALID (0xFFFFFFFFUL)
 #define SM_HASH_MASK (0x7FFFFFFFUL)
 #define SM_EXIST_FLAG (0x80000000UL)
 #define SM_ALIGN(x) (((x) + 15UL) & ~15UL)
 
+/**
+ * @struct smallmap
+ * @brief a map context
+ */
 struct smallmap_t
 {
-    uint32_t key_size_;
-    uint32_t value_size_;
-    uint64_t size_;
-    uint64_t capacity_;
-    uint64_t mask_;
-    uint64_t resize_threshold_;
-    uint32_t* hashes_;
-    uint8_t* keys_;
-    uint8_t* values_;
+    uint32_t key_size_; //!< key size in bytes
+    uint32_t value_size_; //!< value size in bytes
+    uint64_t size_; //!< number of items
+    uint64_t capacity_; //!< maximum number of items
+    uint64_t mask_; //!< mask for using instead of division
+    uint64_t resize_threshold_; //!< threshold for expanding the buffer
+    uint32_t* hashes_; //!< hash values
+    uint8_t* keys_; //!< buffer for keys
+    uint8_t* values_; //!< buffer for values
+    
     bool (*key_constructor_)(struct smallmap_t*, void*, const void*);
     void (*key_move_)(struct smallmap_t*, void*, const void*);
     void (*key_destructor_)(struct smallmap_t*, void*);
@@ -29,17 +33,21 @@ struct smallmap_t
 
     uint32_t (*hasher_)(const void*);
     bool (*compare_)(const void*, const void*);
+
     void* (*allocate_)(size_t);
     void (*deallocate_)(void*);
 };
 
+/**
+ * @brief find an item by the calculated hash
+ */
 static uint32_t sm_find_(const smallmap* map, uint32_t hash, const void* key)
 {
     uint32_t start = hash & map->mask_;
     hash |= SM_EXIST_FLAG;
     uint32_t pos = start;
     do {
-        if(map->hashes_[pos] == hash && map->compare_(&map->keys_[pos], key)) {
+        if(map->hashes_[pos] == hash && map->compare_(&map->keys_[pos * map->key_size_], &key)) {
             return pos;
         }
         pos = (pos + 1) & map->mask_;
@@ -47,6 +55,9 @@ static uint32_t sm_find_(const smallmap* map, uint32_t hash, const void* key)
     return SM_INVALID;
 }
 
+/**
+ * @brief add an item by the calculated hash
+ */
 static bool sm_add_item(smallmap* map, uint32_t hash, const uint8_t* src_key, const uint8_t* src_value)
 {
     uint32_t start = hash & map->mask_;
@@ -69,6 +80,9 @@ static bool sm_add_item(smallmap* map, uint32_t hash, const uint8_t* src_key, co
     return false;
 }
 
+/**
+ * @brief move value of an item
+ */
 static void sm_move_item(smallmap* map, uint32_t hash, const uint8_t* src_key, const uint8_t* src_value)
 {
     uint32_t start = hash & map->mask_;
@@ -86,10 +100,13 @@ static void sm_move_item(smallmap* map, uint32_t hash, const uint8_t* src_key, c
     } while(pos != start);
 }
 
+/**
+ * @brief expand the capacity of a map
+ */
 static bool sm_expand(smallmap* map)
 {
-    uint64_t next_capacity = (map->capacity_<=0)? 16 : map->capacity_<<1;
-    if(SM_INVALID<=next_capacity){
+    uint64_t next_capacity = (map->capacity_ <= 0) ? 16 : map->capacity_ << 1;
+    if(SM_INVALID <= next_capacity) {
         return false;
     }
     size_t hash_size = SM_ALIGN(next_capacity * sizeof(uint32_t));
@@ -109,13 +126,13 @@ static bool sm_expand(smallmap* map)
 
     map->capacity_ = next_capacity;
     map->mask_ = next_capacity - 1;
-    map->resize_threshold_ = (uint32_t)(next_capacity * 0.7f);
+    map->resize_threshold_ = (uint64_t)(next_capacity * 0.7f);
     map->hashes_ = (uint32_t*)buffer;
     map->keys_ = buffer + hash_size;
-    map->values_ = buffer + value_size;
+    map->values_ = buffer + hash_size + key_size;
 
     for(uint32_t i = 0; i < prev_capacity; ++i) {
-        if(SM_EXIST_FLAG == (prev_hashes[i] & SM_EXIST_FLAG)) {
+        if(SM_EXIST_FLAG != (prev_hashes[i] & SM_EXIST_FLAG)) {
             continue;
         }
         uint32_t hash = prev_hashes[i] & SM_HASH_MASK;
@@ -175,7 +192,7 @@ smallmap* sm_construct(
     map->compare_ = compare;
     map->allocate_ = allocate;
     map->deallocate_ = deallocate;
-    if(!sm_expand(map)){
+    if(!sm_expand(map)) {
         sm_destruct(map);
         return NULL;
     }
@@ -215,24 +232,29 @@ void sm_deallocate(smallmap* map, void* ptr)
 uint32_t sm_find(const smallmap* map, const void* key)
 {
     assert(NULL != map);
-    uint32_t hash = map->hasher_(key) & SM_HASH_MASK;
+    assert(NULL != key);
+    uint32_t hash = map->hasher_(&key) & SM_HASH_MASK;
     return sm_find_(map, hash, key);
 }
 
-bool sm_try_get(const smallmap* map, const void* key, void** value)
+bool sm_try_get(const smallmap* map, const void* key, void* value)
 {
     assert(NULL != map);
+    assert(NULL != key);
+    assert(NULL != value);
     uint32_t pos = sm_find(map, key);
     if(SM_INVALID == pos) {
         return false;
     }
-    *value = (void*)(&map->values_[pos * map->value_size_]);
+    memcpy(value, &map->values_[pos * map->value_size_], map->value_size_);
     return true;
 }
 
 bool sm_add(smallmap* map, const void* key, const void* value)
 {
     assert(NULL != map);
+    assert(NULL != key);
+    assert(NULL != value);
     uint32_t hash = map->hasher_(&key) & SM_HASH_MASK;
     if(SM_INVALID != sm_find_(map, hash, key)) {
         return false;
@@ -262,6 +284,7 @@ void sm_remove_at(smallmap* map, uint32_t pos)
 void sm_remove(smallmap* map, const void* key)
 {
     assert(NULL != map);
+    assert(NULL != key);
     uint32_t pos = sm_find(map, key);
     if(SM_INVALID == pos) {
         return;
